@@ -1,19 +1,19 @@
 task: classify
 mode: train
 model: yolo26n-cls.pt
-data: c:\Gojiii\blink blink\repo\eye-blink-decoder\blinkblink-3
-epochs: 1
+data: c:\Gojiii\blink blink\repo\eye-blink-decoder\blinkblink-4
+epochs: 100
 time: null
 patience: 100
-batch: 64
-imgsz: 514
+batch: 32
+imgsz: 224
 save: true
 save_period: -1
 cache: false
 device: null
-workers: 8
+workers: 0
 project: null
-name: nano_100
+name: nano_1009
 exist_ok: false
 pretrained: true
 optimizer: auto
@@ -105,4 +105,4 @@ auto_augment: randaugment
 erasing: 0.4
 cfg: null
 tracker: botsort.yaml
-save_dir: C:\Gojiii\blink blink\repo\eye-blink-decoder\runs\classify\nano_100
+save_dir: C:\Gojiii\blink blink\repo\eye-blink-decoder\runs\classify\nano_1009
