@@ -183,5 +183,5 @@ This project is developed by **AI Lab - Tel-U** (January 2026).
 ---
 
 <p align="center">
-  Made with ❤️ by AI Lab - Tel-U
+  Made with ❤️ by FG AI Lab - Tel-U
 </p>
