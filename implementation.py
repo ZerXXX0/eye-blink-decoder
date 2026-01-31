@@ -17,6 +17,7 @@ import mediapipe as mp
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision as mp_vision
 from mediapipe import Image as MpImage
+from transformers import AutoTokenizer, EncoderDecoderModel
 import streamlit as st
 from ultralytics import YOLO
 from collections import deque
@@ -1088,6 +1089,171 @@ class RuleBasedCorrector(NLPCorrector):
         return []
 
 
+@st.cache_resource
+def load_indobert_corrector_model():
+    """
+    Load IndoBERT Seq2Seq model and tokenizer with Streamlit caching.
+    Model is loaded only once and reused across reruns.
+    
+    Returns:
+        Tuple of (model, tokenizer, device)
+    """
+    import torch
+    
+    # Model is in a subfolder on HuggingFace
+    model_repo = "ZerXXX/indobert-corrector"
+    subfolder = "indoBERT-best-corrector"
+    
+    # Load tokenizer and model from Hugging Face Hub with subfolder
+    tokenizer = AutoTokenizer.from_pretrained(model_repo, subfolder=subfolder)
+    model = EncoderDecoderModel.from_pretrained(model_repo, subfolder=subfolder)
+    
+    # Explicitly set token IDs from config.json (required for generation)
+    # These values are from the model's config.json on HuggingFace
+    model.config.decoder_start_token_id = 2  # [CLS] token
+    model.config.eos_token_id = 3            # [SEP] token
+    model.config.pad_token_id = 0            # [PAD] token
+    model.config.bos_token_id = 2            # Same as decoder_start
+    
+    # Also set on generation_config
+    if model.generation_config is not None:
+        model.generation_config.decoder_start_token_id = 2
+        model.generation_config.eos_token_id = 3
+        model.generation_config.pad_token_id = 0
+        model.generation_config.bos_token_id = 2
+    
+    # Set model to evaluation mode
+    model.eval()
+    
+    # Determine device and move model
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+    
+    return model, tokenizer, device
+
+
+class IndoBERTCorrector(NLPCorrector):
+    """
+    IndoBERT Seq2Seq text corrector using EncoderDecoderModel.
+    Loads model from Hugging Face Hub: ZerXXX/indobert-corrector/indoBERT-best-corrector
+    """
+    
+    def __init__(self):
+        """
+        Initialize the IndoBERT corrector.
+        Uses Streamlit cached resource for model loading.
+        """
+        self.model, self.tokenizer, self.device = load_indobert_corrector_model()
+        self.max_length = 64
+        self.num_beams = 4
+    
+    def correct(self, text: str) -> str:
+        """
+        Apply IndoBERT Seq2Seq correction to the input text.
+        
+        Args:
+            text: Input text to correct
+            
+        Returns:
+            Corrected text
+        """
+        if not text or not text.strip():
+            return text
+        
+        try:
+            import torch
+            
+            # Tokenize input
+            inputs = self.tokenizer(
+                text,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=self.max_length
+            ).to(self.device)
+            
+            # Generate correction with deterministic settings (no sampling)
+            # Token IDs from model config.json on HuggingFace
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    input_ids=inputs["input_ids"],
+                    attention_mask=inputs["attention_mask"],
+                    max_length=self.max_length,
+                    num_beams=self.num_beams,
+                    do_sample=False,
+                    early_stopping=True,
+                    decoder_start_token_id=2,
+                    eos_token_id=3,
+                    pad_token_id=0,
+                    bos_token_id=2
+                )
+            
+            # Decode output
+            corrected = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            
+            return corrected if corrected else text
+            
+        except Exception as e:
+            print(f"IndoBERT correction error: {e}")
+            return text
+    
+    def get_suggestions(self, text: str) -> List[str]:
+        """
+        Get correction suggestions for the input text.
+        Uses beam search to generate multiple candidates.
+        
+        Args:
+            text: Input text
+            
+        Returns:
+            List of suggested corrections
+        """
+        if not text or not text.strip():
+            return []
+        
+        try:
+            import torch
+            
+            # Tokenize input
+            inputs = self.tokenizer(
+                text,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=self.max_length
+            ).to(self.device)
+            
+            # Generate multiple suggestions using beam search
+            # Token IDs from model config.json on HuggingFace
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    input_ids=inputs["input_ids"],
+                    attention_mask=inputs["attention_mask"],
+                    max_length=self.max_length,
+                    num_beams=self.num_beams,
+                    num_return_sequences=min(self.num_beams, 3),
+                    do_sample=False,
+                    early_stopping=True,
+                    decoder_start_token_id=2,
+                    eos_token_id=3,
+                    pad_token_id=0,
+                    bos_token_id=2
+                )
+            
+            # Decode all outputs
+            suggestions = []
+            for output in outputs:
+                decoded = self.tokenizer.decode(output, skip_special_tokens=True)
+                if decoded and decoded != text and decoded not in suggestions:
+                    suggestions.append(decoded)
+            
+            return suggestions
+            
+        except Exception as e:
+            print(f"IndoBERT suggestions error: {e}")
+            return []
+
+
 class NLPCorrectionManager:
     """
     Manager for NLP-based text correction.
@@ -1101,8 +1267,8 @@ class NLPCorrectionManager:
         self.raw_text = ""
         self.corrected_text = ""
         
-        # Initialize with rule-based corrector
-        self.set_corrector(RuleBasedCorrector())
+        # Initialize with IndoBERT corrector (Seq2Seq model from Hugging Face)
+        self.set_corrector(IndoBERTCorrector())
     
     def set_corrector(self, corrector: NLPCorrector):
         """

@@ -6,6 +6,7 @@ A real-time system that converts eye blinks into Morse code and decoded text usi
 ![MediaPipe](https://img.shields.io/badge/MediaPipe-0.10+-green.svg)
 ![YOLO](https://img.shields.io/badge/YOLO-v26-orange.svg)
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.30+-red.svg)
+![HuggingFace](https://img.shields.io/badge/🤗%20HuggingFace-IndoBERT-yellow.svg)
 
 ## 🌟 Features
 
@@ -15,6 +16,7 @@ A real-time system that converts eye blinks into Morse code and decoded text usi
 - **Calibration System**: Personalized blink duration calibration for accurate detection
 - **Streamlit Web Interface**: User-friendly interface with live video feed and real-time feedback
 - **Multiple YOLO Models**: Choose between nano, small, and medium models based on performance needs
+- **NLP Text Correction**: IndoBERT Seq2Seq model for automatic Indonesian text correction
 
 ## 📁 Project Structure
 
@@ -29,6 +31,7 @@ eye-blink-decoder/
 ├── train yolo n.ipynb        # Training notebook (nano)
 ├── train yolo s.ipynb        # Training notebook (small)
 ├── train yolo m.ipynb        # Training notebook (medium)
+├── indoBERT-best-corrector/  # Local IndoBERT model cache (optional)
 └── runs/
     └── classify/
         ├── nano_100/         # Nano model training results
@@ -121,6 +124,36 @@ The sidebar provides various configuration options:
 | Word Gap | Frames to wait before adding space | 90 |
 | EAR Min | Minimum Eye Aspect Ratio (closed) | 0.15 |
 | EAR Max | Maximum Eye Aspect Ratio (open) | 0.35 |
+| NLP Correction | Enable IndoBERT text correction | Off |
+
+## 🤖 NLP Text Correction
+
+The system includes an **IndoBERT Seq2Seq** model for automatic Indonesian text correction. This feature helps fix common typos and abbreviations in decoded Morse text.
+
+### How It Works
+
+- **Model**: [ZerXXX/indobert-corrector](https://huggingface.co/ZerXXX/indobert-corrector/tree/main/indoBERT-best-corrector) (hosted on Hugging Face Hub)
+- **Subfolder**: `indoBERT-best-corrector` (model files are in this subfolder)
+- **Architecture**: BERT2BERT Encoder-Decoder (Seq2Seq) based on [IndoBERT](https://huggingface.co/indobenchmark/indobert-base-p1)
+- **Inference**: Beam search with deterministic output (num_beams=4)
+- **Token IDs**: decoder_start=2, eos=3, pad=0 (from config.json)
+- **Caching**: Model loads once and is cached for the session
+
+### Example Corrections
+
+| Input | Output |
+|-------|--------|
+| `slmt pagi` | `selamat pagi` |
+| `trm ksh` | `terima kasih` |
+| `ap kbr` | `apa kabar` |
+
+### Usage
+
+1. Enable "NLP Correction" checkbox in the sidebar
+2. Decoded text will be automatically corrected
+3. Toggle off to see raw decoded output
+
+> **Note**: The model is downloaded from Hugging Face Hub on first use (~1.1GB). Subsequent runs use the cached version.
 
 ## 🧠 Model Information
 
@@ -159,6 +192,7 @@ Pre-trained models are included. To retrain with your own data:
 - **YOLO v26**: State-of-the-art image classification
 - **Streamlit**: Interactive web application framework
 - **OpenCV**: Image processing and webcam capture
+- **Hugging Face Transformers**: IndoBERT Seq2Seq for NLP correction
 
 ## 🤝 Contributing
 
@@ -179,6 +213,8 @@ This project is developed by **AI Lab - Tel-U** (January 2026).
 - [MediaPipe](https://mediapipe.dev/) for face mesh detection
 - [Ultralytics](https://ultralytics.com/) for YOLO implementation
 - [Streamlit](https://streamlit.io/) for the web framework
+- [Hugging Face](https://huggingface.co/) for Transformers and model hosting
+- [IndoBERT](https://huggingface.co/indobenchmark/indobert-base-p1) for Indonesian language model
 
 ---
 
