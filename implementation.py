@@ -7,7 +7,6 @@ This system converts eye blinks into Morse code and decoded text using a webcam.
 It combines MediaPipe FaceMesh for geometric eye analysis and YOLOv26-cls for
 deep learning-based eye state classification with hybrid confidence scoring.
 
-Author: AI Lab - Tel-U
 Date: January 2026
 """
 
@@ -416,6 +415,41 @@ class EyeAnalyzer:
 # YOLO CLASSIFIER MODULE
 # =============================================================================
 
+def preprocess_for_yolo(image: np.ndarray) -> np.ndarray:
+    """
+    Preprocess image for YOLO inference to match training preprocessing.
+    
+    Training preprocessing steps:
+    1. Auto-orient (handled by camera/cv2)
+    2. Resize: stretch to 512×512 (no letterbox, no aspect ratio preservation)
+    3. Auto-adjust contrast: global histogram equalization on luminance
+    4. Color: RGB
+    5. Normalization: handled internally by YOLO
+    
+    Args:
+        image: Input image (BGR format from OpenCV)
+        
+    Returns:
+        Preprocessed image (RGB, 512x512, histogram equalized)
+    """
+    if image is None or image.size == 0:
+        return image
+    
+    # Step 1: Convert BGR to RGB
+    img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    
+    # Step 2: Resize to 512x512 using stretch (no aspect ratio preservation)
+    img = cv2.resize(img, (512, 512), interpolation=cv2.INTER_LINEAR)
+    
+    # Step 3: Apply global histogram equalization on luminance channel (LAB color space)
+    lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB)
+    l, a, b = cv2.split(lab)
+    l = cv2.equalizeHist(l)
+    img = cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2RGB)
+    
+    return img
+
+
 class YOLOEyeClassifier:
     """
     Deep learning eye state classifier using YOLOv26-cls.
@@ -468,12 +502,12 @@ class YOLOEyeClassifier:
             return result
         
         try:
-            # Resize image if needed
-            if image.shape[0] < 32 or image.shape[1] < 32:
-                image = cv2.resize(image, (64, 64))
+            # Apply training-matched preprocessing:
+            # BGR→RGB, resize 512x512 stretch, histogram equalization on luminance
+            preprocessed = preprocess_for_yolo(image)
             
-            # Run inference
-            predictions = self.model(image, verbose=False)
+            # Run inference (YOLO handles normalization internally)
+            predictions = self.model(preprocessed, verbose=False)
             
             if predictions and len(predictions) > 0:
                 probs = predictions[0].probs

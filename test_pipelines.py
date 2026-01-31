@@ -10,7 +10,6 @@ Streamlit-based interactive testing for each component:
 
 Run with: streamlit run test_pipelines.py
 
-Author: AI Lab - Tel-U
 Date: January 2026
 """
 
@@ -40,6 +39,7 @@ from implementation import (
     EyeData,
     LEFT_EYE_LANDMARKS,
     RIGHT_EYE_LANDMARKS,
+    preprocess_for_yolo,
 )
 
 

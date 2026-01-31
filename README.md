@@ -181,10 +181,32 @@ Pre-trained models are included. To retrain with your own data:
 1. **Face Detection**: MediaPipe FaceMesh detects 468 facial landmarks
 2. **Eye Extraction**: Eye regions are cropped using landmark indices
 3. **EAR Calculation**: Eye Aspect Ratio computed from geometric landmarks
-4. **YOLO Classification**: Deep learning model classifies eye state
-5. **Confidence Fusion**: Hybrid scoring combines EAR and YOLO confidence
-6. **Blink Detection**: Temporal analysis identifies blink events
-7. **Morse Decoding**: Blink patterns converted to text
+4. **YOLO Preprocessing**: Training-matched preprocessing applied to eye crops
+5. **YOLO Classification**: Deep learning model classifies eye state
+6. **Confidence Fusion**: Hybrid scoring combines EAR and YOLO confidence
+7. **Blink Detection**: Temporal analysis identifies blink events
+8. **Morse Decoding**: Blink patterns converted to text
+
+### YOLO Preprocessing Pipeline
+
+The YOLO classifier uses a preprocessing pipeline that exactly matches the training augmentation to ensure consistent confidence scores:
+
+```python
+# Preprocessing steps (in order):
+1. Convert BGR → RGB
+2. Resize to 512×512 (stretch, no aspect ratio preservation)
+3. Apply global histogram equalization on luminance channel (LAB color space)
+4. Return to YOLO (normalization handled internally)
+```
+
+| Step | Description |
+|------|-------------|
+| Color Conversion | BGR to RGB for YOLO compatibility |
+| Resize | Stretch to 512×512 (no letterbox) |
+| Histogram Equalization | Global equalization on L channel (LAB) |
+| Normalization | Handled internally by YOLO |
+
+> **Note**: This preprocessing is applied **only** to YOLO input images. FaceMesh, EAR calculation, and blink logic remain unaffected.
 
 ### Key Technologies
 
@@ -208,7 +230,15 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 This project is developed by **AI Lab - Tel-U** (January 2026).
 
-## 🙏 Acknowledgments
+## � Changelog
+
+### [2026-01-31] - YOLO Preprocessing Alignment
+- **Added**: `preprocess_for_yolo()` function in `implementation.py` to match training preprocessing
+- **Changed**: YOLO inference now applies BGR→RGB conversion, 512×512 stretch resize, and global histogram equalization on luminance channel
+- **Fixed**: Train-inference distribution mismatch causing unstable confidence scores
+- **Updated**: `test_pipelines.py` imports to include preprocessing function
+
+## �🙏 Acknowledgments
 
 - [MediaPipe](https://mediapipe.dev/) for face mesh detection
 - [Ultralytics](https://ultralytics.com/) for YOLO implementation
