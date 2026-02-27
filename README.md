@@ -51,7 +51,7 @@ eye-blink-decoder/
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/your-username/eye-blink-decoder.git
+   git clone https://github.com/ZerXXX0/eye-blink-decoder.git
    cd eye-blink-decoder
    ```
 

@@ -1,2 +1,6 @@
 blinkblink-3/
 blinkblink-4/
+blinkblink-5/
+.venv/
+roboflow_datasets/
+__pycache__/
