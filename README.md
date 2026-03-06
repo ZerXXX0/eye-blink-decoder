@@ -23,6 +23,7 @@ A real-time system that converts eye blinks into Morse code and decoded text usi
 ```
 eye-blink-decoder/
 ├── implementation.py          # Main application code
+├── preprocess_adaptive_equalization.py  # Dataset CLAHE preprocessing script
 ├── requirements.txt           # Python dependencies
 ├── face_landmarker.task       # MediaPipe face landmark model
 ├── yolo26n-cls.pt            # YOLO nano classification model
@@ -80,6 +81,22 @@ streamlit run implementation.py
 ```
 
 This will open the web interface in your default browser.
+
+### Preprocessing `blinkblink-6` with Adaptive Equalization
+
+To apply Roboflow-like adaptive equalization (CLAHE) to all images in `blinkblink-6/`:
+
+```bash
+python preprocess_adaptive_equalization.py
+```
+
+Output is written to `blinkblink-6-preprocessed/` with the same train/valid/test and class folder structure.
+
+Optional parameters:
+
+```bash
+python preprocess_adaptive_equalization.py --clip-limit 2.0 --tile-grid-size 8 --overwrite
+```
 
 ### How to Use
 
