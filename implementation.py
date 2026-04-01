@@ -127,9 +127,9 @@ class SystemConfig:
     # Blink detection
     blink_threshold: float = 0.5  # Confidence threshold for blink detection
     
-    # Timing (in frames at 30 FPS)
-    letter_gap_frames: int = 45  # ~1.5 seconds for letter gap
-    word_gap_frames: int = 90    # ~3 seconds for word gap
+    # Timing (in seconds)
+    letter_gap_seconds: float = 1.5  # Pause duration for letter gap
+    word_gap_seconds: float = 3.0    # Pause duration for word gap
     
     # EAR normalization
     ear_min: float = 0.15  # Minimum EAR (closed eyes)
@@ -156,6 +156,15 @@ class CalibrationPhase(Enum):
     NOT_STARTED = "not_started"
     COLLECTING_DOTS = "collecting_dots"
     COLLECTING_DASHES = "collecting_dashes"
+    COMPLETED = "completed"
+
+
+class AppCalibrationStage(Enum):
+    """Mandatory application-level calibration stages."""
+    NOT_STARTED = "not_started"
+    EAR_OPEN = "ear_open"
+    EAR_CLOSED = "ear_closed"
+    BLINK_DOT_DASH = "blink_dot_dash"
     COMPLETED = "completed"
 
 
@@ -759,12 +768,14 @@ class BlinkDetector:
     def is_letter_gap(self) -> bool:
         """Check if enough time has passed for a letter gap."""
         frames_elapsed = self.get_frames_since_last_blink()
-        return frames_elapsed >= self.config.letter_gap_frames
+        elapsed_ms = self.frames_to_ms(frames_elapsed)
+        return elapsed_ms >= self.config.letter_gap_seconds * 1000.0
     
     def is_word_gap(self) -> bool:
         """Check if enough time has passed for a word gap."""
         frames_elapsed = self.get_frames_since_last_blink()
-        return frames_elapsed >= self.config.word_gap_frames
+        elapsed_ms = self.frames_to_ms(frames_elapsed)
+        return elapsed_ms >= self.config.word_gap_seconds * 1000.0
     
     def reset(self):
         """Reset detector state."""
@@ -979,10 +990,10 @@ class MorseDecoder:
     
     def process_word_gap(self) -> bool:
         """
-        Process a word gap - add space.
+        Process a word gap - add newline.
         
         Returns:
-            True if space was added
+            True if newline was added
         """
         # First process any pending letter
         self.process_letter_gap()
@@ -992,9 +1003,9 @@ class MorseDecoder:
         
         self.pending_word = False
         
-        # Add space if not already ending with space
-        if self.decoded_text and not self.decoded_text.endswith(' '):
-            self.decoded_text += ' '
+        # Add newline if not already ending with newline
+        if self.decoded_text and not self.decoded_text.endswith('\n'):
+            self.decoded_text += '\n'
             return True
         
         return False
@@ -1038,10 +1049,10 @@ class MorseDecoder:
     def remove_unresolved(self):
         """Remove all unresolved (?) characters from decoded text."""
         self.decoded_text = self.decoded_text.replace("?", "")
-        # Clean up any double spaces that might result
-        while "  " in self.decoded_text:
-            self.decoded_text = self.decoded_text.replace("  ", " ")
-        self.decoded_text = self.decoded_text.strip()
+        # Clean up extra spaces line-by-line and keep newline-separated words
+        lines = self.decoded_text.split('\n')
+        cleaned_lines = [' '.join(line.split()) for line in lines]
+        self.decoded_text = '\n'.join(cleaned_lines).strip()
     
     def remove_last_symbol(self):
         """Remove the last symbol from current sequence."""
@@ -1339,7 +1350,13 @@ class NLPCorrectionManager:
         self.raw_text = text
         
         if self.enabled and self.corrector:
-            self.corrected_text = self.corrector.correct(text)
+            lines = text.split('\n')
+            corrected_lines = []
+            for line in lines:
+                tokens = line.split()
+                corrected_tokens = [self.corrector.correct(token) for token in tokens]
+                corrected_lines.append(' '.join(corrected_tokens))
+            self.corrected_text = '\n'.join(corrected_lines)
             return self.corrected_text
         
         return text
@@ -1399,12 +1416,13 @@ class EyeBlinkMorseSystem:
         self.fps = 0.0
         self.processing_time_ms = 0.0
     
-    def process_frame(self, frame: np.ndarray) -> Tuple[np.ndarray, dict]:
+    def process_frame(self, frame: np.ndarray, enable_detection: bool = True) -> Tuple[np.ndarray, dict]:
         """
         Process a single frame through the entire pipeline.
         
         Args:
             frame: Input frame (BGR)
+            enable_detection: Whether to run blink decoding and Morse pipeline
             
         Returns:
             Tuple of (annotated_frame, results_dict)
@@ -1459,31 +1477,32 @@ class EyeBlinkMorseSystem:
             self.current_eye_state = EyeState.CLOSED
         results['eye_state'] = self.current_eye_state
         
-        # 4. Blink detection
-        if not self.calibration_manager.is_calibrating:
-            # Update calibration reference
-            self.blink_detector.calibration = self.calibration_manager.get_calibration()
-            
-            blink_event = self.blink_detector.process(smoothed_confidence)
-            
-            if blink_event:
-                self.last_blink_event = blink_event
-                results['blink_event'] = blink_event
+        # 4. Blink detection and Morse decoding
+        if enable_detection:
+            if not self.calibration_manager.is_calibrating:
+                # Update calibration reference
+                self.blink_detector.calibration = self.calibration_manager.get_calibration()
                 
-                # Add to Morse sequence
-                self.morse_decoder.add_symbol(blink_event.blink_type.value)
-            
-            # Check for letter/word gaps
-            if self.blink_detector.is_word_gap():
-                self.morse_decoder.process_word_gap()
-            elif self.blink_detector.is_letter_gap():
-                self.morse_decoder.process_letter_gap()
-        else:
-            # Calibration mode
-            blink_event = self.blink_detector.process(smoothed_confidence)
-            if blink_event:
-                self.calibration_manager.add_blink(blink_event.duration_ms)
-            results['calibration_progress'] = self.calibration_manager.get_progress()
+                blink_event = self.blink_detector.process(smoothed_confidence)
+                
+                if blink_event:
+                    self.last_blink_event = blink_event
+                    results['blink_event'] = blink_event
+                    
+                    # Add to Morse sequence
+                    self.morse_decoder.add_symbol(blink_event.blink_type.value)
+                
+                # Check for letter/word gaps
+                if self.blink_detector.is_word_gap():
+                    self.morse_decoder.process_word_gap()
+                elif self.blink_detector.is_letter_gap():
+                    self.morse_decoder.process_letter_gap()
+            else:
+                # Calibration mode
+                blink_event = self.blink_detector.process(smoothed_confidence)
+                if blink_event:
+                    self.calibration_manager.add_blink(blink_event.duration_ms)
+                results['calibration_progress'] = self.calibration_manager.get_progress()
         
         # 5. Get Morse state
         results['morse_sequence'] = self.morse_decoder.get_current_sequence()
@@ -1575,20 +1594,32 @@ class EyeBlinkMorseSystem:
 
 def start_detection():
     """Callback for start button."""
-    st.session_state.is_running = True
+    if st.session_state.get('calibration_stage') == AppCalibrationStage.COMPLETED.value:
+        st.session_state.is_running = True
+        st.session_state.calibration_notice = ""
+    else:
+        st.session_state.is_running = False
+        st.session_state.calibration_notice = "Complete calibration first: EAR open/closed, then dot/dash."
 
 def stop_detection():
     """Callback for stop button."""
     st.session_state.is_running = False
+    if st.session_state.get('system') is not None:
+        st.session_state.system.clear_text()
 
 def reset_all():
     """Callback for reset button."""
     st.session_state.reset_all_flag = True
 
 def start_calibration_cb():
-    """Callback for start calibration button - also starts detection."""
-    st.session_state.start_calibration_flag = True
+    """Callback for starting mandatory calibration flow."""
+    st.session_state.start_mandatory_calibration_flag = True
     st.session_state.is_running = True
+
+
+def next_calibration_step_cb():
+    """Callback for moving to the next calibration stage."""
+    st.session_state.next_calibration_flag = True
 
 def reset_calibration_cb():
     """Callback for reset calibration button."""
@@ -1624,8 +1655,10 @@ def create_streamlit_app():
         st.session_state.decoded_text = ""
     if 'morse_sequence' not in st.session_state:
         st.session_state.morse_sequence = ""
-    if 'start_calibration_flag' not in st.session_state:
-        st.session_state.start_calibration_flag = False
+    if 'start_mandatory_calibration_flag' not in st.session_state:
+        st.session_state.start_mandatory_calibration_flag = False
+    if 'next_calibration_flag' not in st.session_state:
+        st.session_state.next_calibration_flag = False
     if 'reset_calibration_flag' not in st.session_state:
         st.session_state.reset_calibration_flag = False
     if 'clear_text_flag' not in st.session_state:
@@ -1634,6 +1667,16 @@ def create_streamlit_app():
         st.session_state.reset_all_flag = False
     if 'remove_unresolved_flag' not in st.session_state:
         st.session_state.remove_unresolved_flag = False
+    if 'calibration_stage' not in st.session_state:
+        st.session_state.calibration_stage = AppCalibrationStage.NOT_STARTED.value
+    if 'ear_open_samples' not in st.session_state:
+        st.session_state.ear_open_samples = []
+    if 'ear_closed_samples' not in st.session_state:
+        st.session_state.ear_closed_samples = []
+    if 'ear_sample_target' not in st.session_state:
+        st.session_state.ear_sample_target = 25
+    if 'calibration_notice' not in st.session_state:
+        st.session_state.calibration_notice = ""
     
     # Sidebar controls
     with st.sidebar:
@@ -1659,14 +1702,14 @@ def create_streamlit_app():
         # Timing settings
         st.subheader("Timing Settings")
         letter_gap = st.slider(
-            "Letter Gap (frames)",
-            min_value=15, max_value=90, value=45, step=5,
-            help="Frames of pause to trigger letter gap."
+            "Letter Gap (seconds)",
+            min_value=0.5, max_value=4.0, value=1.5, step=0.1,
+            help="Seconds of pause to trigger letter gap."
         )
         word_gap = st.slider(
-            "Word Gap (frames)",
-            min_value=30, max_value=150, value=90, step=10,
-            help="Frames of pause to trigger word gap."
+            "Word Gap (seconds)",
+            min_value=1.0, max_value=8.0, value=3.0, step=0.1,
+            help="Seconds of pause to trigger word gap."
         )
         
         # EAR settings
@@ -1682,14 +1725,29 @@ def create_streamlit_app():
         
         # Calibration
         st.subheader("🎯 Calibration")
-        st.caption("Calibrate by blinking 3 short (dots) then 3 long (dashes)")
+        st.caption("Required: EAR open/closed, then dot/dash blink calibration")
         cal_blinks = st.number_input("Blinks per type", 2, 5, 3)
+        ear_sample_target = st.number_input("EAR frames per state", 10, 60, 25)
+        st.session_state.ear_sample_target = int(ear_sample_target)
+
+        stage = st.session_state.calibration_stage
+        if stage == AppCalibrationStage.NOT_STARTED.value:
+            st.info("Press Begin Calibration to start.")
+        elif stage == AppCalibrationStage.EAR_OPEN.value:
+            st.warning("Keep eyes OPEN naturally while samples are collected.")
+        elif stage == AppCalibrationStage.EAR_CLOSED.value:
+            st.warning("Keep eyes CLOSED while samples are collected.")
+        elif stage == AppCalibrationStage.BLINK_DOT_DASH.value:
+            st.warning("Blink 3 short dots, then 3 long dashes.")
+        elif stage == AppCalibrationStage.COMPLETED.value:
+            st.success("Calibration complete. Detection can be started.")
         
         col1, col2 = st.columns(2)
         with col1:
-            st.button("Start Cal.", use_container_width=True, key="start_cal_btn", on_click=start_calibration_cb)
+            st.button("Begin Cal.", use_container_width=True, key="start_cal_btn", on_click=start_calibration_cb)
         with col2:
-            st.button("Reset Cal.", use_container_width=True, key="reset_cal_btn", on_click=reset_calibration_cb)
+            st.button("Next Step", use_container_width=True, key="next_cal_btn", on_click=next_calibration_step_cb)
+        st.button("Reset Cal.", use_container_width=True, key="reset_cal_btn", on_click=reset_calibration_cb)
         
         st.divider()
         
@@ -1751,8 +1809,8 @@ def create_streamlit_app():
         config = SystemConfig(
             alpha=alpha,
             blink_threshold=blink_threshold,
-            letter_gap_frames=letter_gap,
-            word_gap_frames=word_gap,
+            letter_gap_seconds=letter_gap,
+            word_gap_seconds=word_gap,
             ear_min=ear_min,
             ear_max=ear_max,
             use_gpu=use_gpu
@@ -1762,14 +1820,17 @@ def create_streamlit_app():
     system = st.session_state.system
     
     # Update config
-    system.update_config(
-        alpha=alpha,
-        blink_threshold=blink_threshold,
-        letter_gap_frames=letter_gap,
-        word_gap_frames=word_gap,
-        ear_min=ear_min,
-        ear_max=ear_max
-    )
+    stage = st.session_state.calibration_stage
+    update_kwargs = {
+        'alpha': alpha,
+        'blink_threshold': blink_threshold,
+        'letter_gap_seconds': letter_gap,
+        'word_gap_seconds': word_gap,
+    }
+    if stage != AppCalibrationStage.COMPLETED.value:
+        update_kwargs['ear_min'] = ear_min
+        update_kwargs['ear_max'] = ear_max
+    system.update_config(**update_kwargs)
     
     # Handle NLP toggle
     if nlp_enabled != system.nlp_manager.enabled:
@@ -1779,12 +1840,56 @@ def create_streamlit_app():
             system.nlp_manager.disable()
     
     # Handle calibration flags
-    if st.session_state.start_calibration_flag:
-        system.start_calibration(CalibrationMethod.FREE_BLINK, cal_blinks)
-        st.session_state.start_calibration_flag = False
+    if st.session_state.start_mandatory_calibration_flag:
+        system.reset_calibration()
+        system.clear_text()
+        system.confidence_fusion.reset()
+        system.blink_detector.reset()
+        st.session_state.ear_open_samples = []
+        st.session_state.ear_closed_samples = []
+        st.session_state.calibration_stage = AppCalibrationStage.EAR_OPEN.value
+        st.session_state.calibration_notice = "Stage 1/3: Keep eyes OPEN for EAR sampling."
+        st.session_state.start_mandatory_calibration_flag = False
+        st.session_state.is_running = True
+
+    if st.session_state.next_calibration_flag:
+        stage = st.session_state.calibration_stage
+        if stage == AppCalibrationStage.EAR_OPEN.value:
+            if len(st.session_state.ear_open_samples) >= st.session_state.ear_sample_target:
+                st.session_state.calibration_stage = AppCalibrationStage.EAR_CLOSED.value
+                st.session_state.calibration_notice = "Stage 2/3: Keep eyes CLOSED for EAR sampling."
+            else:
+                st.session_state.calibration_notice = "EAR open samples are not enough yet."
+        elif stage == AppCalibrationStage.EAR_CLOSED.value:
+            if len(st.session_state.ear_closed_samples) >= st.session_state.ear_sample_target:
+                open_avg = float(np.mean(st.session_state.ear_open_samples))
+                closed_avg = float(np.mean(st.session_state.ear_closed_samples))
+
+                if open_avg > closed_avg + 1e-4:
+                    system.config.ear_min = closed_avg
+                    system.config.ear_max = open_avg
+                    cal = system.calibration_manager.get_calibration()
+                    cal.ear_baseline_open = open_avg
+                    cal.ear_baseline_closed = closed_avg
+                    st.session_state.calibration_stage = AppCalibrationStage.BLINK_DOT_DASH.value
+                    st.session_state.calibration_notice = "Stage 3/3: Blink 3 short dots, then 3 long dashes."
+                    system.start_calibration(CalibrationMethod.FREE_BLINK, int(cal_blinks))
+                    system.clear_text()
+                    system.blink_detector.reset()
+                    system.confidence_fusion.reset()
+                else:
+                    st.session_state.calibration_notice = "EAR open average must be greater than closed average. Re-run calibration."
+            else:
+                st.session_state.calibration_notice = "EAR closed samples are not enough yet."
+        st.session_state.next_calibration_flag = False
     
     if st.session_state.reset_calibration_flag:
         system.reset_calibration()
+        st.session_state.calibration_stage = AppCalibrationStage.NOT_STARTED.value
+        st.session_state.ear_open_samples = []
+        st.session_state.ear_closed_samples = []
+        st.session_state.calibration_notice = "Calibration reset."
+        st.session_state.is_running = False
         st.session_state.reset_calibration_flag = False
     
     if st.session_state.clear_text_flag:
@@ -1800,7 +1905,15 @@ def create_streamlit_app():
         system.reset_calibration()
         system.confidence_fusion.reset()
         system.blink_detector.reset()
+        st.session_state.calibration_stage = AppCalibrationStage.NOT_STARTED.value
+        st.session_state.ear_open_samples = []
+        st.session_state.ear_closed_samples = []
+        st.session_state.calibration_notice = ""
+        st.session_state.is_running = False
         st.session_state.reset_all_flag = False
+
+    if st.session_state.calibration_notice:
+        st.warning(st.session_state.calibration_notice)
     
     # Video processing with while loop (no flickering)
     if st.session_state.is_running:
@@ -1822,8 +1935,46 @@ def create_streamlit_app():
                     # Flip frame horizontally for mirror effect
                     frame = cv2.flip(frame, 1)
                     
-                    # Process frame
-                    annotated_frame, results = system.process_frame(frame)
+                    # Process frame based on calibration stage
+                    stage = st.session_state.calibration_stage
+                    if stage == AppCalibrationStage.EAR_OPEN.value:
+                        eye_data, annotated_frame = system.eye_analyzer.process_frame(frame, system.config)
+                        if eye_data.landmarks_detected and len(st.session_state.ear_open_samples) < st.session_state.ear_sample_target:
+                            st.session_state.ear_open_samples.append(eye_data.avg_ear)
+
+                        results = {
+                            'eye_state': EyeState.OPEN,
+                            'confidence': 1.0,
+                            'ear': eye_data.avg_ear,
+                            'morse_sequence': system.morse_decoder.get_current_sequence(),
+                            'decoded_text': system.nlp_manager.process(system.morse_decoder.get_decoded_text()),
+                            'is_calibrating': False,
+                            'calibration_progress': ('EAR_OPEN', len(st.session_state.ear_open_samples), st.session_state.ear_sample_target),
+                        }
+                    elif stage == AppCalibrationStage.EAR_CLOSED.value:
+                        eye_data, annotated_frame = system.eye_analyzer.process_frame(frame, system.config)
+                        if eye_data.landmarks_detected and len(st.session_state.ear_closed_samples) < st.session_state.ear_sample_target:
+                            st.session_state.ear_closed_samples.append(eye_data.avg_ear)
+
+                        results = {
+                            'eye_state': EyeState.CLOSED,
+                            'confidence': 0.0,
+                            'ear': eye_data.avg_ear,
+                            'morse_sequence': system.morse_decoder.get_current_sequence(),
+                            'decoded_text': system.nlp_manager.process(system.morse_decoder.get_decoded_text()),
+                            'is_calibrating': False,
+                            'calibration_progress': ('EAR_CLOSED', len(st.session_state.ear_closed_samples), st.session_state.ear_sample_target),
+                        }
+                    else:
+                        annotated_frame, results = system.process_frame(frame, enable_detection=True)
+
+                        if (
+                            stage == AppCalibrationStage.BLINK_DOT_DASH.value
+                            and system.calibration_manager.get_calibration().is_calibrated
+                        ):
+                            st.session_state.calibration_stage = AppCalibrationStage.COMPLETED.value
+                            st.session_state.calibration_notice = "Calibration complete. You can start detection now."
+                            st.session_state.is_running = False
                     
                     # Convert BGR to RGB for Streamlit
                     display_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
@@ -1852,7 +2003,21 @@ def create_streamlit_app():
                         text_display.info("No text decoded yet")
                     
                     # Update calibration status
-                    if results['is_calibrating']:
+                    if stage == AppCalibrationStage.EAR_OPEN.value:
+                        current = len(st.session_state.ear_open_samples)
+                        target = st.session_state.ear_sample_target
+                        if current >= target:
+                            cal_status.info("EAR open complete. Press Next Step.")
+                        else:
+                            cal_status.warning(f"🎯 EAR OPEN samples: {current}/{target}")
+                    elif stage == AppCalibrationStage.EAR_CLOSED.value:
+                        current = len(st.session_state.ear_closed_samples)
+                        target = st.session_state.ear_sample_target
+                        if current >= target:
+                            cal_status.info("EAR closed complete. Press Next Step.")
+                        else:
+                            cal_status.warning(f"🎯 EAR CLOSED samples: {current}/{target}")
+                    elif results['is_calibrating']:
                         progress = results['calibration_progress']  # (phase_name, current, target)
                         phase_name, current, target = progress
                         if phase_name == "DOTS":
@@ -1863,7 +2028,7 @@ def create_streamlit_app():
                             cal_status.info("Calibrating...")
                     elif system.calibration_manager.get_calibration().is_calibrated:
                         cal_data = system.calibration_manager.get_calibration()
-                        cal_status.success(f"✅ Calibrated!\\nDot avg: {cal_data.avg_dot_duration_ms:.0f}ms\\nDash avg: {cal_data.avg_dash_duration_ms:.0f}ms\\nThreshold: {cal_data.avg_blink_duration_ms:.0f}ms")
+                        cal_status.success(f"✅ Calibrated!\\nEAR closed: {cal_data.ear_baseline_closed:.3f}\\nEAR open: {cal_data.ear_baseline_open:.3f}\\nDot avg: {cal_data.avg_dot_duration_ms:.0f}ms\\nDash avg: {cal_data.avg_dash_duration_ms:.0f}ms\\nThreshold: {cal_data.avg_blink_duration_ms:.0f}ms")
                     else:
                         cal_status.info("Not calibrated - using defaults")
                     
@@ -1879,7 +2044,10 @@ def create_streamlit_app():
             st.session_state.is_running = False
     else:
         # Display placeholder when not running
-        video_placeholder.info("👆 Click 'Start Detection' to begin")
+        if st.session_state.calibration_stage == AppCalibrationStage.COMPLETED.value:
+            video_placeholder.info("👆 Click 'Start Detection' to begin")
+        else:
+            video_placeholder.info("👆 Click 'Begin Cal.' to start mandatory calibration")
         eye_state_display.metric("Eye State", "---")
         confidence_display.metric("Confidence", "---")
         fps_display.metric("FPS", "---")
@@ -1888,9 +2056,13 @@ def create_streamlit_app():
         
         if system.calibration_manager.get_calibration().is_calibrated:
             cal_data = system.calibration_manager.get_calibration()
-            cal_status.success(f"✅ Calibrated!\\nDot avg: {cal_data.avg_dot_duration_ms:.0f}ms\\nDash avg: {cal_data.avg_dash_duration_ms:.0f}ms\\nThreshold: {cal_data.avg_blink_duration_ms:.0f}ms")
+            cal_status.success(f"✅ Calibrated!\\nEAR closed: {cal_data.ear_baseline_closed:.3f}\\nEAR open: {cal_data.ear_baseline_open:.3f}\\nDot avg: {cal_data.avg_dot_duration_ms:.0f}ms\\nDash avg: {cal_data.avg_dash_duration_ms:.0f}ms\\nThreshold: {cal_data.avg_blink_duration_ms:.0f}ms")
         else:
-            cal_status.info("Not calibrated - using defaults")
+            stage = st.session_state.calibration_stage
+            if stage == AppCalibrationStage.NOT_STARTED.value:
+                cal_status.info("Calibration required before detection")
+            else:
+                cal_status.info(f"Calibration in progress: {stage}")
 
 
 # =============================================================================
