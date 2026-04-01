@@ -13,10 +13,14 @@ A real-time system that converts eye blinks into Morse code and decoded text usi
 - **Real-time Eye Tracking**: Uses MediaPipe FaceMesh for precise facial landmark detection
 - **Hybrid Classification**: Combines Eye Aspect Ratio (EAR) with YOLO deep learning classification
 - **Morse Code Decoding**: Converts blink patterns (short/long) to dots and dashes
-- **Calibration System**: Personalized blink duration calibration for accurate detection
+- **Mandatory 2-Stage Calibration**:
+   - Stage 1: EAR calibration (open-eye samples, then closed-eye samples)
+   - Stage 2: Dot/Dash calibration (short and long blink timing)
 - **Streamlit Web Interface**: User-friendly interface with live video feed and real-time feedback
 - **Multiple YOLO Models**: Choose between nano, small, and medium models based on performance needs
-- **NLP Text Correction**: IndoBERT Seq2Seq model for automatic Indonesian text correction
+- **Second-based Timing**: Letter and word gap thresholds are configured in seconds
+- **Line-by-line Word Output**: Each completed word is moved to a new line
+- **NLP Text Correction**: IndoBERT Seq2Seq model for automatic Indonesian text correction (applied per word)
 
 ## 📁 Project Structure
 
@@ -100,16 +104,23 @@ python preprocess_adaptive_equalization.py --clip-limit 2.0 --tile-grid-size 8 -
 
 ### How to Use
 
-1. **Start Detection**: Click the "▶️ Start Detection" button to begin
-2. **Calibration** (Recommended): 
-   - Click "Start Calibration" in the sidebar
-   - Perform short blinks (dots) when prompted
-   - Perform long blinks (dashes) when prompted
+1. **Run Calibration First** (required):
+   - Click **Begin Cal.**
+   - **Stage 1 - EAR Open**: keep eyes open naturally until target sample count is reached
+   - Click **Next Step**
+   - **Stage 2 - EAR Closed**: keep eyes closed until target sample count is reached
+   - Click **Next Step**
+   - **Stage 3 - Dot/Dash**: blink short for dots, then long for dashes
+2. **Start Detection**: click **▶️ Start Detection** after calibration is completed
 3. **Blink to Communicate**:
    - **Short blink** = Dot (.)
    - **Long blink** = Dash (-)
-   - **Pause** = Letter/word separator
-4. **View Results**: Decoded text appears in real-time
+   - **Pause** = Letter/word separator (configured in seconds)
+4. **View Results**:
+   - Decoded words are separated line-by-line
+   - If NLP is enabled, correction is applied per word
+5. **Stop Detection**:
+   - Pressing **⏹️ Stop Detection** clears decoded text
 
 ### Morse Code Reference
 
@@ -137,10 +148,12 @@ The sidebar provides various configuration options:
 |-----------|-------------|---------|
 | Alpha | Weight for YOLO confidence (vs EAR) | 0.4 |
 | Blink Threshold | Confidence threshold for blink detection | 0.5 |
-| Letter Gap | Frames to wait before confirming letter | 45 |
-| Word Gap | Frames to wait before adding space | 90 |
+| Letter Gap | Seconds to wait before confirming letter | 1.5 |
+| Word Gap | Seconds to wait before committing a word break | 3.0 |
 | EAR Min | Minimum Eye Aspect Ratio (closed) | 0.15 |
 | EAR Max | Maximum Eye Aspect Ratio (open) | 0.35 |
+| EAR Frames per State | Number of samples used for EAR open/closed calibration | 25 |
+| Blinks per Type | Number of short blinks and long blinks for timing calibration | 3 |
 | NLP Correction | Enable IndoBERT text correction | Off |
 
 ## 🤖 NLP Text Correction
@@ -167,7 +180,7 @@ The system includes an **IndoBERT Seq2Seq** model for automatic Indonesian text 
 ### Usage
 
 1. Enable "NLP Correction" checkbox in the sidebar
-2. Decoded text will be automatically corrected
+2. Decoded text will be corrected per word (not as one full paragraph)
 3. Toggle off to see raw decoded output
 
 > **Note**: The model is downloaded from Hugging Face Hub on first use (~1.1GB). Subsequent runs use the cached version.
@@ -247,7 +260,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 This project is developed by **AI Lab - Tel-U** (January 2026).
 
-## � Changelog
+## 📝 Changelog
 
 ### [2026-01-31] - YOLO Preprocessing Alignment
 - **Added**: `preprocess_for_yolo()` function in `implementation.py` to match training preprocessing
@@ -255,7 +268,14 @@ This project is developed by **AI Lab - Tel-U** (January 2026).
 - **Fixed**: Train-inference distribution mismatch causing unstable confidence scores
 - **Updated**: `test_pipelines.py` imports to include preprocessing function
 
-## �🙏 Acknowledgments
+### [2026-04-01] - Calibration and Decoding UX Update
+- **Added**: Mandatory multi-stage calibration (EAR open/closed, then dot/dash)
+- **Changed**: Letter and word gap settings from frame-based to second-based thresholds
+- **Changed**: Word boundary output now places each completed word on a new line
+- **Changed**: NLP correction now runs on each word token
+- **Changed**: Stopping detection clears decoded text immediately
+
+## 🙏 Acknowledgments
 
 - [MediaPipe](https://mediapipe.dev/) for face mesh detection
 - [Ultralytics](https://ultralytics.com/) for YOLO implementation
