@@ -430,8 +430,8 @@ def preprocess_for_yolo(image: np.ndarray) -> np.ndarray:
     
     Training preprocessing steps:
     1. Auto-orient (handled by camera/cv2)
-    2. Resize: stretch to 512×512 (no letterbox, no aspect ratio preservation)
-    3. Auto-adjust contrast: global histogram equalization on luminance
+    2. Center-crop to portrait 9:16 aspect ratio
+    3. Resize: stretch to 512×512 (no letterbox, no aspect ratio preservation)
     4. Color: RGB
     5. Normalization: handled internally by YOLO
     
@@ -439,22 +439,33 @@ def preprocess_for_yolo(image: np.ndarray) -> np.ndarray:
         image: Input image (BGR format from OpenCV)
         
     Returns:
-        Preprocessed image (RGB, 512x512, histogram equalized)
+        Preprocessed image (RGB, 512x512)
     """
     if image is None or image.size == 0:
         return image
+
+    # Step 1: Center-crop to portrait 9:16 (w:h) before square stretching.
+    # This only affects YOLO input preprocessing and not the displayed frontend frame.
+    h, w = image.shape[:2]
+    target_ratio = 9.0 / 16.0  # width / height
+    current_ratio = w / (h + 1e-6)
+
+    if current_ratio > target_ratio:
+        # Image too wide: keep height, crop width.
+        new_w = max(1, int(h * target_ratio))
+        x0 = max(0, (w - new_w) // 2)
+        image = image[:, x0:x0 + new_w]
+    else:
+        # Image too tall/narrow: keep width, crop height.
+        new_h = max(1, int(w / target_ratio))
+        y0 = max(0, (h - new_h) // 2)
+        image = image[y0:y0 + new_h, :]
     
-    # Step 1: Convert BGR to RGB
+    # Step 2: Convert BGR to RGB
     img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     
-    # Step 2: Resize to 512x512 using stretch (no aspect ratio preservation)
+    # Step 3: Resize to 512x512 using stretch (no aspect ratio preservation)
     img = cv2.resize(img, (512, 512), interpolation=cv2.INTER_LINEAR)
-    
-    # Step 3: Apply global histogram equalization on luminance channel (LAB color space)
-    lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB)
-    l, a, b = cv2.split(lab)
-    l = cv2.equalizeHist(l)
-    img = cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2RGB)
     
     return img
 
