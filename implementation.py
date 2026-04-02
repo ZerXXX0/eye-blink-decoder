@@ -1782,8 +1782,7 @@ def create_streamlit_app():
             st.button("⏹️ Stop Detection", use_container_width=True, key="stop_btn", on_click=stop_detection)
         with btn_col3:
             st.button("🔄 Reset All", use_container_width=True, key="reset_btn", on_click=reset_all)
-    
-    with col_info:
+        
         st.subheader("📊 Status")
         
         # Status displays
@@ -1792,8 +1791,9 @@ def create_streamlit_app():
             eye_state_display = st.empty()
             confidence_display = st.empty()
             fps_display = st.empty()
-            
-        st.subheader("📡 Current Morse")
+    
+    with col_info:
+        st.subheader("� Current Morse")
         morse_display = st.empty()
         
         st.subheader("📝 Decoded Text")
@@ -1801,19 +1801,19 @@ def create_streamlit_app():
         
         st.subheader("📈 Calibration Status")
         cal_status = st.empty()
-    
-    # Morse code reference
-    with st.expander("📖 Morse Code Reference"):
-        col1, col2, col3, col4 = st.columns(4)
-        morse_items = list(MORSE_CODE_DICT.items())
-        chunk_size = len(morse_items) // 4 + 1
         
-        for i, col in enumerate([col1, col2, col3, col4]):
-            with col:
-                start = i * chunk_size
-                end = start + chunk_size
-                for code, char in morse_items[start:end]:
-                    st.text(f"{char}: {code}")
+        # Morse code reference
+        with st.expander("📖 Morse Code Reference"):
+            col1, col2, col3, col4 = st.columns(4)
+            morse_items = list(MORSE_CODE_DICT.items())
+            chunk_size = len(morse_items) // 4 + 1
+            
+            for i, col in enumerate([col1, col2, col3, col4]):
+                with col:
+                    start = i * chunk_size
+                    end = start + chunk_size
+                    for code, char in morse_items[start:end]:
+                        st.text(f"{char}: {code}")
     
     # Initialize system
     if st.session_state.system is None:
