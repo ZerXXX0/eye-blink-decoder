@@ -130,6 +130,7 @@ class SystemConfig:
     # Timing (in seconds)
     letter_gap_seconds: float = 1.5  # Pause duration for letter gap
     word_gap_seconds: float = 3.0    # Pause duration for word gap
+    sentence_gap_seconds: float = 5.0  # Pause duration for sentence gap
     
     # EAR normalization
     ear_min: float = 0.15  # Minimum EAR (closed eyes)
@@ -787,6 +788,12 @@ class BlinkDetector:
         frames_elapsed = self.get_frames_since_last_blink()
         elapsed_ms = self.frames_to_ms(frames_elapsed)
         return elapsed_ms >= self.config.word_gap_seconds * 1000.0
+
+    def is_sentence_gap(self) -> bool:
+        """Check if enough time has passed for a sentence gap."""
+        frames_elapsed = self.get_frames_since_last_blink()
+        elapsed_ms = self.frames_to_ms(frames_elapsed)
+        return elapsed_ms >= self.config.sentence_gap_seconds * 1000.0
     
     def reset(self):
         """Reset detector state."""
@@ -1019,6 +1026,26 @@ class MorseDecoder:
             self.decoded_text += '\n'
             return True
         
+        return False
+
+    def process_sentence_gap(self) -> bool:
+        """
+        Process a sentence gap - ensure word separation and terminate sentence.
+
+        Returns:
+            True if sentence boundary was added
+        """
+        # First process as word gap to flush pending symbols/letters.
+        self.process_word_gap()
+
+        if not self.decoded_text:
+            return False
+
+        # Use a double newline as explicit sentence boundary marker.
+        if not self.decoded_text.endswith('\n\n'):
+            self.decoded_text = self.decoded_text.rstrip('\n') + '\n\n'
+            return True
+
         return False
     
     def decode_sequence(self, sequence: str) -> Optional[str]:
@@ -1322,6 +1349,8 @@ class NLPCorrectionManager:
         self.corrector: Optional[NLPCorrector] = None
         self.raw_text = ""
         self.corrected_text = ""
+        self.last_completed_raw = ""
+        self.last_completed_corrected = ""
         
         # Initialize with IndoBERT corrector (Seq2Seq model from Hugging Face)
         self.set_corrector(IndoBERTCorrector())
@@ -1348,12 +1377,21 @@ class NLPCorrectionManager:
         self.enabled = not self.enabled
         return self.enabled
     
-    def process(self, text: str) -> str:
+    def _correct_sentence(self, sentence: str) -> str:
+        """Apply correction to a single sentence-like block."""
+        compact = ' '.join(sentence.split())
+        if not compact:
+            return ""
+        return self.corrector.correct(compact) if self.corrector else compact
+
+    def process(self, text: str, sentence_finished: bool = False) -> str:
         """
         Process text with optional NLP correction.
+        Correction is applied only to completed sentences (split by double newlines).
         
         Args:
             text: Input text
+            sentence_finished: Whether a sentence was just finalized in this frame
             
         Returns:
             Corrected text if enabled, original otherwise
@@ -1361,13 +1399,32 @@ class NLPCorrectionManager:
         self.raw_text = text
         
         if self.enabled and self.corrector:
-            lines = text.split('\n')
-            corrected_lines = []
-            for line in lines:
-                tokens = line.split()
-                corrected_tokens = [self.corrector.correct(token) for token in tokens]
-                corrected_lines.append(' '.join(corrected_tokens))
-            self.corrected_text = '\n'.join(corrected_lines)
+            parts = text.split('\n\n')
+
+            if sentence_finished:
+                completed_parts = parts
+                pending_part = ""
+            else:
+                completed_parts = parts[:-1]
+                pending_part = parts[-1] if parts else ""
+
+            completed_raw = '\n\n'.join(completed_parts)
+            if completed_raw != self.last_completed_raw:
+                corrected_parts = []
+                for part in completed_parts:
+                    corrected = self._correct_sentence(part)
+                    if corrected:
+                        corrected_parts.append(corrected)
+                self.last_completed_raw = completed_raw
+                self.last_completed_corrected = '\n\n'.join(corrected_parts)
+
+            if self.last_completed_corrected and pending_part.strip():
+                self.corrected_text = self.last_completed_corrected + '\n\n' + pending_part
+            elif self.last_completed_corrected:
+                self.corrected_text = self.last_completed_corrected
+            else:
+                self.corrected_text = pending_part
+
             return self.corrected_text
         
         return text
@@ -1447,6 +1504,8 @@ class EyeBlinkMorseSystem:
             'yolo_result': YOLOResult(),
             'blink_event': None,
             'morse_sequence': '',
+            'raw_decoded_text': '',
+            'nlp_smoothed_text': '',
             'decoded_text': '',
             'is_calibrating': self.calibration_manager.is_calibrating,
             'calibration_progress': self.calibration_manager.get_progress(),  # (phase, current, target)
@@ -1489,6 +1548,7 @@ class EyeBlinkMorseSystem:
         results['eye_state'] = self.current_eye_state
         
         # 4. Blink detection and Morse decoding
+        sentence_finished = False
         if enable_detection:
             if not self.calibration_manager.is_calibrating:
                 # Update calibration reference
@@ -1502,9 +1562,11 @@ class EyeBlinkMorseSystem:
                     
                     # Add to Morse sequence
                     self.morse_decoder.add_symbol(blink_event.blink_type.value)
-                
-                # Check for letter/word gaps
-                if self.blink_detector.is_word_gap():
+
+                # Check for sentence/word/letter gaps (largest gap first)
+                if self.blink_detector.is_sentence_gap():
+                    sentence_finished = self.morse_decoder.process_sentence_gap()
+                elif self.blink_detector.is_word_gap():
                     self.morse_decoder.process_word_gap()
                 elif self.blink_detector.is_letter_gap():
                     self.morse_decoder.process_letter_gap()
@@ -1520,7 +1582,14 @@ class EyeBlinkMorseSystem:
         
         # 6. Apply NLP correction if enabled
         raw_text = self.morse_decoder.get_decoded_text()
-        results['decoded_text'] = self.nlp_manager.process(raw_text)
+        results['raw_decoded_text'] = raw_text
+        results['nlp_smoothed_text'] = self.nlp_manager.process(raw_text, sentence_finished=sentence_finished)
+        results['decoded_text'] = results['nlp_smoothed_text']
+        results['sentence_finished'] = sentence_finished
+
+        # Persist corrected output immediately when a sentence is finalized.
+        if sentence_finished and self.nlp_manager.enabled:
+            self.morse_decoder.decoded_text = results['decoded_text']
         
         # Update performance metrics
         self.frame_count += 1
@@ -1653,6 +1722,21 @@ def create_streamlit_app():
         page_icon="👁️",
         layout="wide"
     )
+
+    st.markdown(
+        """
+        <style>
+        .block-container {
+            padding-top: 0.8rem;
+            padding-bottom: 0.6rem;
+        }
+        div[data-testid="stMetricValue"] {
+            font-size: 1.05rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
     
     st.title("👁️ Real-Time Eye-Blink to Morse Code System")
     st.markdown("*MediaPipe FaceMesh + YOLOv26-cls + Streamlit*")
@@ -1722,6 +1806,11 @@ def create_streamlit_app():
             min_value=1.0, max_value=8.0, value=3.0, step=0.1,
             help="Seconds of pause to trigger word gap."
         )
+        sentence_gap = st.slider(
+            "Sentence Gap (seconds)",
+            min_value=2.0, max_value=12.0, value=5.0, step=0.1,
+            help="Seconds of pause to trigger sentence completion and NLP correction."
+        )
         
         # EAR settings
         st.subheader("EAR Normalization")
@@ -1767,61 +1856,62 @@ def create_streamlit_app():
         st.button("Clear Text", use_container_width=True, key="clear_text_btn", on_click=clear_text_cb)
         st.button("Remove ? (unresolved)", use_container_width=True, key="remove_unresolved_btn", on_click=remove_unresolved_cb)
     
-    # Main content area
-    col_video, col_info = st.columns([2, 1])
-    
+    # Compact one-window dashboard layout (top row)
+    col_video, col_info, col_text = st.columns([1.60, 1.00, 1.30])
+
     with col_video:
-        st.subheader("📹 Live Video Feed")
+        st.subheader("📹 Live Video")
         video_placeholder = st.empty()
-        
-        # Control buttons with callbacks
+
         btn_col1, btn_col2, btn_col3 = st.columns(3)
         with btn_col1:
-            st.button("▶️ Start Detection", use_container_width=True, key="start_btn", on_click=start_detection)
+            st.button("▶️ Start", use_container_width=True, key="start_btn", on_click=start_detection)
         with btn_col2:
-            st.button("⏹️ Stop Detection", use_container_width=True, key="stop_btn", on_click=stop_detection)
+            st.button("⏹️ Stop", use_container_width=True, key="stop_btn", on_click=stop_detection)
         with btn_col3:
-            st.button("🔄 Reset All", use_container_width=True, key="reset_btn", on_click=reset_all)
-        
-        st.subheader("📊 Status")
-        
-        # Status displays
-        status_container = st.container()
-        with status_container:
-            eye_state_display = st.empty()
-            confidence_display = st.empty()
-            fps_display = st.empty()
-    
+            st.button("🔄 Reset", use_container_width=True, key="reset_btn", on_click=reset_all)
+
     with col_info:
-        st.subheader("� Current Morse")
+        st.subheader("📊 Status")
+        eye_state_display = st.empty()
+        confidence_display = st.empty()
+        fps_display = st.empty()
+
+        st.subheader("📡 Current Morse")
         morse_display = st.empty()
-        
+
+        st.subheader("📈 Calibration")
+        cal_status = st.empty()
+
+    with col_text:
         st.subheader("📝 Decoded Text")
         text_display = st.empty()
-        
-        st.subheader("📈 Calibration Status")
-        cal_status = st.empty()
-        
-        # Morse code reference
-        with st.expander("📖 Morse Code Reference"):
-            col1, col2, col3, col4 = st.columns(4)
-            morse_items = list(MORSE_CODE_DICT.items())
-            chunk_size = len(morse_items) // 4 + 1
-            
-            for i, col in enumerate([col1, col2, col3, col4]):
-                with col:
-                    start = i * chunk_size
-                    end = start + chunk_size
-                    for code, char in morse_items[start:end]:
-                        st.text(f"{char}: {code}")
+
+        st.subheader("🧠 NLP Smoothed")
+        nlp_text_display = st.empty()
+
+    # Wide non-scroll Morse reference (bottom row)
+    st.subheader("📖 Morse Reference")
+    ref_columns = st.columns(8)
+    morse_items = [f"{char}: {code}" for code, char in MORSE_CODE_DICT.items()]
+    chunk_size = len(morse_items) // 8 + 1
+
+    for i, col in enumerate(ref_columns):
+        with col:
+            start = i * chunk_size
+            end = start + chunk_size
+            for item in morse_items[start:end]:
+                st.caption(item)
     
     # Initialize system
     if st.session_state.system is None:
+        sentence_gap = max(sentence_gap, word_gap + 0.1)
         config = SystemConfig(
             alpha=alpha,
             blink_threshold=blink_threshold,
             letter_gap_seconds=letter_gap,
             word_gap_seconds=word_gap,
+            sentence_gap_seconds=sentence_gap,
             ear_min=ear_min,
             ear_max=ear_max,
             use_gpu=use_gpu
@@ -1837,6 +1927,7 @@ def create_streamlit_app():
         'blink_threshold': blink_threshold,
         'letter_gap_seconds': letter_gap,
         'word_gap_seconds': word_gap,
+        'sentence_gap_seconds': max(sentence_gap, word_gap + 0.1),
     }
     if stage != AppCalibrationStage.COMPLETED.value:
         update_kwargs['ear_min'] = ear_min
@@ -1949,6 +2040,8 @@ def create_streamlit_app():
                     # Process frame based on calibration stage
                     stage = st.session_state.calibration_stage
                     if stage == AppCalibrationStage.EAR_OPEN.value:
+                        raw_text = system.morse_decoder.get_decoded_text()
+                        nlp_smoothed_text = system.nlp_manager.process(raw_text, sentence_finished=False)
                         eye_data, annotated_frame = system.eye_analyzer.process_frame(frame, system.config)
                         if eye_data.landmarks_detected and len(st.session_state.ear_open_samples) < st.session_state.ear_sample_target:
                             st.session_state.ear_open_samples.append(eye_data.avg_ear)
@@ -1958,11 +2051,15 @@ def create_streamlit_app():
                             'confidence': 1.0,
                             'ear': eye_data.avg_ear,
                             'morse_sequence': system.morse_decoder.get_current_sequence(),
-                            'decoded_text': system.nlp_manager.process(system.morse_decoder.get_decoded_text()),
+                            'raw_decoded_text': raw_text,
+                            'nlp_smoothed_text': nlp_smoothed_text,
+                            'decoded_text': nlp_smoothed_text,
                             'is_calibrating': False,
                             'calibration_progress': ('EAR_OPEN', len(st.session_state.ear_open_samples), st.session_state.ear_sample_target),
                         }
                     elif stage == AppCalibrationStage.EAR_CLOSED.value:
+                        raw_text = system.morse_decoder.get_decoded_text()
+                        nlp_smoothed_text = system.nlp_manager.process(raw_text, sentence_finished=False)
                         eye_data, annotated_frame = system.eye_analyzer.process_frame(frame, system.config)
                         if eye_data.landmarks_detected and len(st.session_state.ear_closed_samples) < st.session_state.ear_sample_target:
                             st.session_state.ear_closed_samples.append(eye_data.avg_ear)
@@ -1972,7 +2069,9 @@ def create_streamlit_app():
                             'confidence': 0.0,
                             'ear': eye_data.avg_ear,
                             'morse_sequence': system.morse_decoder.get_current_sequence(),
-                            'decoded_text': system.nlp_manager.process(system.morse_decoder.get_decoded_text()),
+                            'raw_decoded_text': raw_text,
+                            'nlp_smoothed_text': nlp_smoothed_text,
+                            'decoded_text': nlp_smoothed_text,
                             'is_calibrating': False,
                             'calibration_progress': ('EAR_CLOSED', len(st.session_state.ear_closed_samples), st.session_state.ear_sample_target),
                         }
@@ -1991,7 +2090,7 @@ def create_streamlit_app():
                     display_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
                     
                     # Update displays (using placeholders - no flicker)
-                    video_placeholder.image(display_frame, channels="RGB", use_container_width=True)
+                    video_placeholder.image(display_frame, channels="RGB", width=460)
                     
                     # Update status
                     state_emoji = "👁️" if results['eye_state'] == EyeState.OPEN else "😑"
@@ -2012,6 +2111,13 @@ def create_streamlit_app():
                         text_display.success(decoded)
                     else:
                         text_display.info("No text decoded yet")
+
+                    # Update NLP-smoothed text display
+                    nlp_smoothed = results.get('nlp_smoothed_text', '')
+                    if nlp_smoothed:
+                        nlp_text_display.success(nlp_smoothed)
+                    else:
+                        nlp_text_display.info("No NLP-smoothed output yet")
                     
                     # Update calibration status
                     if stage == AppCalibrationStage.EAR_OPEN.value:
@@ -2064,6 +2170,7 @@ def create_streamlit_app():
         fps_display.metric("FPS", "---")
         morse_display.info("Waiting for input...")
         text_display.info("No text decoded yet")
+        nlp_text_display.info("No NLP-smoothed output yet")
         
         if system.calibration_manager.get_calibration().is_calibrated:
             cal_data = system.calibration_manager.get_calibration()
