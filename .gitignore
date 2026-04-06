@@ -12,6 +12,7 @@ blinkblink-16/
 blinkblink-17/
 blinkblink-18/
 .venv/
+.venv1/
 roboflow_datasets/
 __pycache__/
 yolo26m-cls.pt
