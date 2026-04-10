@@ -1349,8 +1349,7 @@ class NLPCorrectionManager:
         self.corrector: Optional[NLPCorrector] = None
         self.raw_text = ""
         self.corrected_text = ""
-        self.last_completed_raw = ""
-        self.last_completed_corrected = ""
+        self.corrected_sentences: List[str] = []
         
         # Initialize with IndoBERT corrector (Seq2Seq model from Hugging Face)
         self.set_corrector(IndoBERTCorrector())
@@ -1401,29 +1400,19 @@ class NLPCorrectionManager:
         if self.enabled and self.corrector:
             parts = text.split('\n\n')
 
+            # Correct each completed sentence independently.
+            # Pending text is kept out of NLP output until sentence completion.
             if sentence_finished:
-                completed_parts = parts
-                pending_part = ""
+                completed_parts = [part for part in parts if part.strip()]
             else:
-                completed_parts = parts[:-1]
-                pending_part = parts[-1] if parts else ""
+                completed_parts = [part for part in parts[:-1] if part.strip()]
 
-            completed_raw = '\n\n'.join(completed_parts)
-            if completed_raw != self.last_completed_raw:
-                corrected_parts = []
-                for part in completed_parts:
-                    corrected = self._correct_sentence(part)
-                    if corrected:
-                        corrected_parts.append(corrected)
-                self.last_completed_raw = completed_raw
-                self.last_completed_corrected = '\n\n'.join(corrected_parts)
+            while len(self.corrected_sentences) < len(completed_parts):
+                idx = len(self.corrected_sentences)
+                corrected = self._correct_sentence(completed_parts[idx])
+                self.corrected_sentences.append(corrected)
 
-            if self.last_completed_corrected and pending_part.strip():
-                self.corrected_text = self.last_completed_corrected + '\n\n' + pending_part
-            elif self.last_completed_corrected:
-                self.corrected_text = self.last_completed_corrected
-            else:
-                self.corrected_text = pending_part
+            self.corrected_text = '\n\n'.join(self.corrected_sentences)
 
             return self.corrected_text
         
@@ -1584,12 +1573,8 @@ class EyeBlinkMorseSystem:
         raw_text = self.morse_decoder.get_decoded_text()
         results['raw_decoded_text'] = raw_text
         results['nlp_smoothed_text'] = self.nlp_manager.process(raw_text, sentence_finished=sentence_finished)
-        results['decoded_text'] = results['nlp_smoothed_text']
+        results['decoded_text'] = raw_text
         results['sentence_finished'] = sentence_finished
-
-        # Persist corrected output immediately when a sentence is finalized.
-        if sentence_finished and self.nlp_manager.enabled:
-            self.morse_decoder.decoded_text = results['decoded_text']
         
         # Update performance metrics
         self.frame_count += 1
@@ -2053,7 +2038,7 @@ def create_streamlit_app():
                             'morse_sequence': system.morse_decoder.get_current_sequence(),
                             'raw_decoded_text': raw_text,
                             'nlp_smoothed_text': nlp_smoothed_text,
-                            'decoded_text': nlp_smoothed_text,
+                            'decoded_text': raw_text,
                             'is_calibrating': False,
                             'calibration_progress': ('EAR_OPEN', len(st.session_state.ear_open_samples), st.session_state.ear_sample_target),
                         }
@@ -2071,7 +2056,7 @@ def create_streamlit_app():
                             'morse_sequence': system.morse_decoder.get_current_sequence(),
                             'raw_decoded_text': raw_text,
                             'nlp_smoothed_text': nlp_smoothed_text,
-                            'decoded_text': nlp_smoothed_text,
+                            'decoded_text': raw_text,
                             'is_calibrating': False,
                             'calibration_progress': ('EAR_CLOSED', len(st.session_state.ear_closed_samples), st.session_state.ear_sample_target),
                         }
