@@ -60,6 +60,9 @@ MORSE_CODE_DICT = {
     '.-..-.': '"', '...-..-': '$', '.--.-.': '@', '...---...': 'SOS'
 }
 
+# Bump this when pipeline behavior changes to rebuild session system safely.
+SYSTEM_LOGIC_VERSION = "2026-04-10-nlp-raw-v2"
+
 
 # =============================================================================
 # DATA CLASSES & ENUMS
@@ -1375,6 +1378,12 @@ class NLPCorrectionManager:
         """Toggle NLP correction on/off."""
         self.enabled = not self.enabled
         return self.enabled
+
+    def reset(self):
+        """Reset internal NLP tracking state without touching raw decoded text."""
+        self.raw_text = ""
+        self.corrected_text = ""
+        self.corrected_sentences = []
     
     def _correct_sentence(self, sentence: str) -> str:
         """Apply correction to a single sentence-like block."""
@@ -1637,6 +1646,7 @@ class EyeBlinkMorseSystem:
     def clear_text(self):
         """Clear decoded text."""
         self.morse_decoder.clear_text()
+        self.nlp_manager.reset()
     
     def toggle_nlp(self) -> bool:
         """Toggle NLP correction."""
@@ -1729,6 +1739,8 @@ def create_streamlit_app():
     # Initialize session state
     if 'system' not in st.session_state:
         st.session_state.system = None
+    if 'system_logic_version' not in st.session_state:
+        st.session_state.system_logic_version = ""
     if 'is_running' not in st.session_state:
         st.session_state.is_running = False
     if 'decoded_text' not in st.session_state:
@@ -1889,7 +1901,10 @@ def create_streamlit_app():
                 st.caption(item)
     
     # Initialize system
-    if st.session_state.system is None:
+    if (
+        st.session_state.system is None
+        or st.session_state.system_logic_version != SYSTEM_LOGIC_VERSION
+    ):
         sentence_gap = max(sentence_gap, word_gap + 0.1)
         config = SystemConfig(
             alpha=alpha,
@@ -1902,6 +1917,7 @@ def create_streamlit_app():
             use_gpu=use_gpu
         )
         st.session_state.system = EyeBlinkMorseSystem(config)
+        st.session_state.system_logic_version = SYSTEM_LOGIC_VERSION
     
     system = st.session_state.system
     
