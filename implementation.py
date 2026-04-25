@@ -28,6 +28,204 @@ import threading
 from abc import ABC, abstractmethod
 import urllib.request
 import os
+import queue
+import json
+
+
+def resolve_recording_output_path(path_value: str) -> str:
+    """Resolve recording path, ensuring output is an .mp4 file path."""
+    raw_path = (path_value or "").strip()
+    if not raw_path:
+        raw_path = "recordings"
+
+    expanded = os.path.abspath(os.path.expanduser(raw_path))
+    root, ext = os.path.splitext(expanded)
+
+    if ext:
+        output_path = expanded if ext.lower() == ".mp4" else f"{root}.mp4"
+    else:
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        output_path = os.path.join(expanded, f"blink_recording_{timestamp}.mp4")
+
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    return output_path
+
+
+def resolve_recording_metadata_path(
+    video_path: str,
+    json_output_dir: str = "",
+    json_file_name: str = "",
+) -> str:
+    """Build metadata JSON path from explicit inputs or fallback to video-based naming."""
+    base_video_root, _ = os.path.splitext(video_path)
+
+    output_dir = (json_output_dir or "").strip()
+    if output_dir:
+        output_dir = os.path.abspath(os.path.expanduser(output_dir))
+    else:
+        output_dir = os.path.dirname(os.path.abspath(video_path))
+
+    file_name = (json_file_name or "").strip()
+    if file_name:
+        file_name = os.path.basename(file_name)
+        file_root, file_ext = os.path.splitext(file_name)
+        if file_ext.lower() != ".json":
+            file_name = f"{file_root}.json" if file_root else "recording_config.json"
+    else:
+        file_name = f"{os.path.basename(base_video_root)}.json"
+
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    return os.path.join(output_dir, file_name)
+
+
+def resolve_calibration_metadata_path(
+    json_output_dir: str = "",
+    json_file_name: str = "",
+) -> str:
+    """Build calibration JSON path from explicit inputs or sensible defaults."""
+    output_dir = (json_output_dir or "").strip() or "/json"
+    if output_dir.startswith(("/", "\\")) and not os.path.isabs(output_dir[1:]):
+        # Treat /json as workspace-local json directory.
+        output_dir = os.path.join(os.getcwd(), output_dir.lstrip("/\\"))
+    else:
+        output_dir = os.path.abspath(os.path.expanduser(output_dir))
+
+    file_name = (json_file_name or "").strip()
+    if file_name:
+        file_name = os.path.basename(file_name)
+        file_root, file_ext = os.path.splitext(file_name)
+        if file_ext.lower() != ".json":
+            file_name = f"{file_root}.json" if file_root else "calibration_config.json"
+    else:
+        file_name = f"calibration_config_{time.strftime('%Y%m%d_%H%M%S')}.json"
+
+    os.makedirs(output_dir, exist_ok=True)
+    return os.path.join(output_dir, file_name)
+
+
+def save_recording_metadata(
+    json_path: str,
+    system,
+    capture_fps: float,
+    frame_size: Tuple[int, int],
+    calibration_stage: str,
+    ear_open_samples: List[float],
+    ear_closed_samples: List[float],
+):
+    """Save calibration/config snapshot to JSON for each recording."""
+    cfg = system.config
+    cal = system.calibration_manager.get_calibration()
+
+    metadata = {
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "capture": {
+            "fps": float(capture_fps),
+            "width": int(frame_size[0]),
+            "height": int(frame_size[1]),
+        },
+        "settings": {
+            "confidence": {
+                "alpha": float(cfg.alpha),
+                "blink_threshold": float(cfg.blink_threshold),
+                "smoothing_window": int(cfg.smoothing_window),
+                "ema_alpha": float(cfg.ema_alpha),
+            },
+            "timing": {
+                "letter_gap_seconds": float(cfg.letter_gap_seconds),
+                "word_gap_seconds": float(cfg.word_gap_seconds),
+                "sentence_gap_seconds": float(cfg.sentence_gap_seconds),
+                "default_blink_duration_ms": float(cfg.default_blink_duration_ms),
+            },
+            "ear": {
+                "ear_min": float(cfg.ear_min),
+                "ear_max": float(cfg.ear_max),
+                "open_sample_count": int(len(ear_open_samples)),
+                "closed_sample_count": int(len(ear_closed_samples)),
+                "open_sample_mean": float(np.mean(ear_open_samples)) if ear_open_samples else None,
+                "closed_sample_mean": float(np.mean(ear_closed_samples)) if ear_closed_samples else None,
+            },
+            "model": {
+                "yolo_model_path": cfg.yolo_model_path,
+                "use_gpu": bool(cfg.use_gpu),
+            },
+        },
+        "calibration": {
+            "app_stage": calibration_stage,
+            "is_calibrated": bool(cal.is_calibrated),
+            "method": cal.calibration_method.value,
+            "ear_baseline_open": float(cal.ear_baseline_open),
+            "ear_baseline_closed": float(cal.ear_baseline_closed),
+            "avg_dot_duration_ms": float(cal.avg_dot_duration_ms),
+            "avg_dash_duration_ms": float(cal.avg_dash_duration_ms),
+            "avg_blink_duration_ms_threshold": float(cal.avg_blink_duration_ms),
+            "dot_durations": [float(v) for v in cal.dot_durations],
+            "dash_durations": [float(v) for v in cal.dash_durations],
+        },
+    }
+
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2)
+
+
+class AsyncVideoRecorder:
+    """Background MP4 writer to keep UI/inference loop real-time."""
+
+    def __init__(self, max_queue_size: int = 180):
+        self.max_queue_size = max_queue_size
+        self.frame_queue = queue.Queue(maxsize=max_queue_size)
+        self.writer = None
+        self.thread = None
+        self.running = False
+
+    def start(self, output_path: str, fps: float, frame_size: Tuple[int, int]) -> bool:
+        """Initialize writer and start background worker."""
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        self.writer = cv2.VideoWriter(output_path, fourcc, max(1.0, float(fps)), frame_size)
+        if not self.writer.isOpened():
+            self.writer = None
+            return False
+
+        self.running = True
+        self.thread = threading.Thread(target=self._writer_loop, daemon=True)
+        self.thread.start()
+        return True
+
+    def _writer_loop(self):
+        """Drain queued frames and write to disk until stopped and queue is empty."""
+        while self.running or not self.frame_queue.empty():
+            try:
+                frame = self.frame_queue.get(timeout=0.05)
+            except queue.Empty:
+                continue
+
+            if self.writer is not None:
+                self.writer.write(frame)
+
+    def write(self, frame: np.ndarray):
+        """Queue a frame for background writing; drop frame if queue is full."""
+        if not self.running:
+            return
+
+        try:
+            self.frame_queue.put_nowait(frame.copy())
+        except queue.Full:
+            # Drop frame to preserve real-time processing behavior.
+            pass
+
+    def stop(self):
+        """Stop worker and release writer resource."""
+        self.running = False
+        if self.thread is not None:
+            self.thread.join(timeout=2.0)
+            self.thread = None
+
+        if self.writer is not None:
+            self.writer.release()
+            self.writer = None
 
 
 # =============================================================================
@@ -1671,14 +1869,17 @@ def start_detection():
     """Callback for start button."""
     if st.session_state.get('calibration_stage') == AppCalibrationStage.COMPLETED.value:
         st.session_state.is_running = True
+        st.session_state.record_on_start = True
         st.session_state.calibration_notice = ""
     else:
         st.session_state.is_running = False
+        st.session_state.record_on_start = False
         st.session_state.calibration_notice = "Complete calibration first: EAR open/closed, then dot/dash."
 
 def stop_detection():
     """Callback for stop button."""
     st.session_state.is_running = False
+    st.session_state.record_on_start = False
     if st.session_state.get('system') is not None:
         st.session_state.system.clear_text()
 
@@ -1690,6 +1891,7 @@ def start_calibration_cb():
     """Callback for starting mandatory calibration flow."""
     st.session_state.start_mandatory_calibration_flag = True
     st.session_state.is_running = True
+    st.session_state.record_on_start = False
 
 
 def next_calibration_step_cb():
@@ -1769,6 +1971,22 @@ def create_streamlit_app():
         st.session_state.ear_sample_target = 25
     if 'calibration_notice' not in st.session_state:
         st.session_state.calibration_notice = ""
+    if 'record_on_start' not in st.session_state:
+        st.session_state.record_on_start = False
+    if 'recording_output_path' not in st.session_state:
+        st.session_state.recording_output_path = "recordings"
+    if 'recording_json_output_dir' not in st.session_state:
+        st.session_state.recording_json_output_dir = "/json"
+    if 'recording_json_file_name' not in st.session_state:
+        st.session_state.recording_json_file_name = ""
+    if 'last_recording_path' not in st.session_state:
+        st.session_state.last_recording_path = ""
+    if 'last_recording_metadata_path' not in st.session_state:
+        st.session_state.last_recording_metadata_path = ""
+    if 'recording_notice' not in st.session_state:
+        st.session_state.recording_notice = ""
+    if 'calibration_json_saved' not in st.session_state:
+        st.session_state.calibration_json_saved = False
     
     # Sidebar controls
     with st.sidebar:
@@ -1817,6 +2035,30 @@ def create_streamlit_app():
         # NLP settings
         st.subheader("NLP Correction")
         nlp_enabled = st.checkbox("Enable NLP Correction", value=False)
+
+        st.subheader("🎥 Video Recording")
+        recording_output_path = st.text_input(
+            "Save MP4 to path",
+            value=st.session_state.recording_output_path,
+            help="Enter an .mp4 file path or a folder path. Recording starts automatically with Start and stops with Stop."
+        )
+        recording_json_output_dir = st.text_input(
+            "Save config JSON directory",
+            value=st.session_state.recording_json_output_dir,
+            help="Optional. Leave empty to save JSON next to the MP4 file."
+        )
+        recording_json_file_name = st.text_input(
+            "Config JSON file name",
+            value=st.session_state.recording_json_file_name,
+            help="Optional. Example: session_config.json. Leave empty to use MP4 base name."
+        )
+        st.session_state.recording_output_path = recording_output_path
+        st.session_state.recording_json_output_dir = recording_json_output_dir
+        st.session_state.recording_json_file_name = recording_json_file_name
+        if st.session_state.last_recording_path:
+            st.caption(f"Last saved: {st.session_state.last_recording_path}")
+        if st.session_state.last_recording_metadata_path:
+            st.caption(f"Last metadata: {st.session_state.last_recording_metadata_path}")
         
         st.divider()
         
@@ -1951,6 +2193,7 @@ def create_streamlit_app():
         st.session_state.ear_open_samples = []
         st.session_state.ear_closed_samples = []
         st.session_state.calibration_stage = AppCalibrationStage.EAR_OPEN.value
+        st.session_state.calibration_json_saved = False
         st.session_state.calibration_notice = "Stage 1/3: Keep eyes OPEN for EAR sampling."
         st.session_state.start_mandatory_calibration_flag = False
         st.session_state.is_running = True
@@ -1989,10 +2232,12 @@ def create_streamlit_app():
     if st.session_state.reset_calibration_flag:
         system.reset_calibration()
         st.session_state.calibration_stage = AppCalibrationStage.NOT_STARTED.value
+        st.session_state.calibration_json_saved = False
         st.session_state.ear_open_samples = []
         st.session_state.ear_closed_samples = []
         st.session_state.calibration_notice = "Calibration reset."
         st.session_state.is_running = False
+        st.session_state.record_on_start = False
         st.session_state.reset_calibration_flag = False
     
     if st.session_state.clear_text_flag:
@@ -2009,14 +2254,19 @@ def create_streamlit_app():
         system.confidence_fusion.reset()
         system.blink_detector.reset()
         st.session_state.calibration_stage = AppCalibrationStage.NOT_STARTED.value
+        st.session_state.calibration_json_saved = False
         st.session_state.ear_open_samples = []
         st.session_state.ear_closed_samples = []
         st.session_state.calibration_notice = ""
         st.session_state.is_running = False
+        st.session_state.record_on_start = False
         st.session_state.reset_all_flag = False
 
     if st.session_state.calibration_notice:
         st.warning(st.session_state.calibration_notice)
+    if st.session_state.recording_notice:
+        st.success(st.session_state.recording_notice)
+        st.session_state.recording_notice = ""
     
     # Video processing with while loop (no flickering)
     if st.session_state.is_running:
@@ -2025,6 +2275,21 @@ def create_streamlit_app():
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         cap.set(cv2.CAP_PROP_FPS, 30)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimize buffer for real-time
+
+        recorder = None
+        recording_path = ""
+        recording_fps = None
+        last_frame_size = (640, 480)
+        loop_fps_history = deque(maxlen=60)
+        last_loop_time = None
+        should_record = bool(st.session_state.get('record_on_start', False))
+
+        if should_record:
+            try:
+                recording_path = resolve_recording_output_path(st.session_state.get('recording_output_path', 'recordings'))
+            except Exception as e:
+                st.error(f"Could not prepare recording path: {e}")
+                should_record = False
         
         if cap.isOpened():
             try:
@@ -2034,9 +2299,19 @@ def create_streamlit_app():
                     if not ret:
                         st.error("Failed to capture frame from webcam")
                         break
+
+                    now = time.time()
+                    if last_loop_time is not None:
+                        delta = now - last_loop_time
+                        if delta > 1e-6:
+                            loop_fps_history.append(1.0 / delta)
+                    last_loop_time = now
                     
-                    # Flip frame horizontally for mirror effect
+                    # Flip frame horizontally for mirror effect.
+                    # This is the original frame used by the app pipeline and recording.
                     frame = cv2.flip(frame, 1)
+                    raw_capture_frame = frame.copy()
+                    last_frame_size = (raw_capture_frame.shape[1], raw_capture_frame.shape[0])
                     
                     # Process frame based on calibration stage
                     stage = st.session_state.calibration_stage
@@ -2083,12 +2358,52 @@ def create_streamlit_app():
                             stage == AppCalibrationStage.BLINK_DOT_DASH.value
                             and system.calibration_manager.get_calibration().is_calibrated
                         ):
+                            if not st.session_state.get('calibration_json_saved', False):
+                                try:
+                                    metadata_path = resolve_calibration_metadata_path(
+                                        st.session_state.get('recording_json_output_dir', ''),
+                                        st.session_state.get('recording_json_file_name', ''),
+                                    )
+                                    save_recording_metadata(
+                                        metadata_path,
+                                        system,
+                                        float(system.blink_detector.estimated_fps or 30.0),
+                                        (int(raw_capture_frame.shape[1]), int(raw_capture_frame.shape[0])),
+                                        str(AppCalibrationStage.COMPLETED.value),
+                                        st.session_state.ear_open_samples,
+                                        st.session_state.ear_closed_samples,
+                                    )
+                                    st.session_state.last_recording_metadata_path = metadata_path
+                                    st.session_state.recording_notice = f"Calibration config saved to: {metadata_path}"
+                                    st.session_state.calibration_json_saved = True
+                                except Exception as calibration_json_err:
+                                    st.error(f"Failed to save calibration JSON: {calibration_json_err}")
+
                             st.session_state.calibration_stage = AppCalibrationStage.COMPLETED.value
                             st.session_state.calibration_notice = "Calibration complete. You can start detection now."
                             st.session_state.is_running = False
                     
                     # Convert BGR to RGB for Streamlit
                     display_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
+
+                    if should_record:
+                        if recorder is None:
+                            if len(loop_fps_history) >= 8:
+                                runtime_fps = float(np.mean(loop_fps_history))
+                                camera_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+                                target_fps = runtime_fps if runtime_fps > 1.0 else (camera_fps if camera_fps > 1.0 else 30.0)
+                                frame_h, frame_w = raw_capture_frame.shape[:2]
+                                recorder = AsyncVideoRecorder(max_queue_size=180)
+                                if not recorder.start(recording_path, target_fps, (frame_w, frame_h)):
+                                    st.error("Unable to start video recording writer.")
+                                    recorder = None
+                                    should_record = False
+                                else:
+                                    recording_fps = target_fps
+
+                        if recorder is not None:
+                            # Save original webcam capture, not overlayed/annotated frame.
+                            recorder.write(raw_capture_frame)
                     
                     # Update displays (using placeholders - no flicker)
                     video_placeholder.image(display_frame, channels="RGB", width=460)
@@ -2156,6 +2471,11 @@ def create_streamlit_app():
             except Exception as e:
                 st.error(f"Error: {e}")
             finally:
+                if recorder is not None:
+                    recorder.stop()
+                    st.session_state.last_recording_path = recording_path
+                    st.session_state.recording_notice = f"Recording saved to: {recording_path}"
+                st.session_state.record_on_start = False
                 cap.release()
         else:
             st.error("Camera not available")

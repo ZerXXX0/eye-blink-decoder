@@ -1,0 +1,54 @@
+{
+  "created_at": "2026-04-25T13:39:57",
+  "capture": {
+    "fps": 8.138947793207533,
+    "width": 640,
+    "height": 480
+  },
+  "settings": {
+    "confidence": {
+      "alpha": 0.4,
+      "blink_threshold": 0.5,
+      "smoothing_window": 5,
+      "ema_alpha": 0.3
+    },
+    "timing": {
+      "letter_gap_seconds": 1.5,
+      "word_gap_seconds": 3.0,
+      "sentence_gap_seconds": 5.0,
+      "default_blink_duration_ms": 200.0
+    },
+    "ear": {
+      "ear_min": 0.14461651212977783,
+      "ear_max": 0.29150695816699135,
+      "open_sample_count": 25,
+      "closed_sample_count": 25,
+      "open_sample_mean": 0.29150695816699135,
+      "closed_sample_mean": 0.14461651212977783
+    },
+    "model": {
+      "yolo_model_path": "runs/classify/nano_100/weights/best.pt",
+      "use_gpu": true
+    }
+  },
+  "calibration": {
+    "app_stage": "completed",
+    "is_calibrated": true,
+    "method": "free_blink",
+    "ear_baseline_open": 0.29150695816699135,
+    "ear_baseline_closed": 0.14461651212977783,
+    "avg_dot_duration_ms": 392.59565018161373,
+    "avg_dash_duration_ms": 704.1466232382876,
+    "avg_blink_duration_ms_threshold": 548.3711367099506,
+    "dot_durations": [
+      142.18035308353103,
+      519.8403261438174,
+      515.7662713174926
+    ],
+    "dash_durations": [
+      628.6759604827106,
+      623.7018744514471,
+      860.062034780705
+    ]
+  }
+}
