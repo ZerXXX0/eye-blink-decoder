@@ -21,3 +21,5 @@ yolo26s-cls.pt
 yolo26n.pt
 recordings/
 .vscode/
+.venv-1/
+json/

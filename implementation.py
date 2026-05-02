@@ -912,9 +912,24 @@ class BlinkDetector:
         self.fps_history = deque(maxlen=30)
         self.last_frame_time = time.time()
         self.estimated_fps = 30.0
+        self.fixed_fps: Optional[float] = None
+
+    def set_fps(self, fps: Optional[float]):
+        """Lock the detector to a known FPS, typically for offline video inference."""
+        if fps is None or fps <= 0:
+            self.fixed_fps = None
+            return
+
+        self.fixed_fps = float(fps)
+        self.estimated_fps = float(fps)
     
     def update_fps(self):
         """Update FPS estimation."""
+        if self.fixed_fps is not None:
+            self.estimated_fps = self.fixed_fps
+            self.last_frame_time = time.time()
+            return
+
         current_time = time.time()
         delta = current_time - self.last_frame_time
         if delta > 0:
