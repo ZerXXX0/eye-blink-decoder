@@ -16,8 +16,6 @@ import mediapipe as mp
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision as mp_vision
 from mediapipe import Image as MpImage
-from transformers import AutoTokenizer, EncoderDecoderModel
-import streamlit as st
 from ultralytics import YOLO
 from collections import deque
 from dataclasses import dataclass, field
@@ -30,6 +28,21 @@ import urllib.request
 import os
 import queue
 import json
+
+try:
+    import streamlit as st
+except ModuleNotFoundError:
+    class _StreamlitFallback:
+        session_state = {}
+
+        @staticmethod
+        def cache_resource(*args, **kwargs):
+            def decorator(func):
+                return func
+
+            return decorator
+
+    st = _StreamlitFallback()
 
 
 def resolve_recording_output_path(path_value: str) -> str:
@@ -1398,6 +1411,7 @@ def load_indobert_corrector_model():
         Tuple of (model, tokenizer, device)
     """
     import torch
+    from transformers import AutoTokenizer, EncoderDecoderModel
     
     # Model is in a subfolder on HuggingFace
     model_repo = "ZerXXX/indobert-corrector"

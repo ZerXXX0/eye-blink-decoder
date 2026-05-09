@@ -1,4 +1,10 @@
 {
     "python-envs.defaultEnvManager": "ms-python.python:system",
-    "python-envs.defaultPackageManager": "ms-python.python:pip"
+    "python-envs.defaultPackageManager": "ms-python.python:pip",
+    "chat.tools.terminal.autoApprove": {
+        "/^C:/Users/User/AppData/Local/Programs/Python/Python312/python\\.exe -c \"import mediapipe as mp; print\\('mediapipe', mp\\.__version__\\)\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
 }
